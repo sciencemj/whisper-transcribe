@@ -32,13 +32,17 @@ Output is written to `./<basename>.txt` in the current working directory.
 | `--language CODE` | auto-detect | Spoken language code, e.g. `en`, `ko`. |
 | `--device {cuda,mps,cpu}` | auto | Picks `cuda > mps > cpu` if not specified. |
 | `-s`, `--per-seg` | off | Print each segment as it completes. Default is a percentage progress bar over audio length. |
+| `--multi-lang` | off | Per-segment language detection for audio that switches languages mid-recording. Uses VAD to split, runs Whisper's `detect_language` per chunk, then transcribes each chunk in its detected language. Slower than the single-pass mode and quality near chunk boundaries may degrade. |
+| `--format {plain,tagged,timestamped}` | `plain` | Output format for `--multi-lang`. `plain` concatenates text. `tagged` prefixes each chunk with `[lang]`. `timestamped` prefixes with `[mm:ss.ss-mm:ss.ss lang]`. |
 
 ### Examples
 
 ```bash
 whisper-transcribe interview.mp3 --language en
 whisper-transcribe lecture.m4a --model small --device cpu
-whisper-transcribe podcast.m4a -s            # per-segment lines instead of bar
+whisper-transcribe podcast.m4a -s                          # per-segment lines instead of bar
+whisper-transcribe bilingual.m4a --multi-lang              # auto language per chunk, plain text
+whisper-transcribe bilingual.m4a --multi-lang --format timestamped
 ```
 
 ## Notes
