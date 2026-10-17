@@ -1,14 +1,19 @@
 import argparse
-import os
 import sys
 from pathlib import Path
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Transcribe an audio file (m4a, mp3, wav, ...) to a .txt file using OpenAI Whisper.",
+        description="Transcribe an audio file (m4a, mp3, wav, ...) to a .txt file using OpenAI Whisper, "
+        "or turn a meeting recording into minutes summarized by a local LLM.",
     )
-    parser.add_argument("audio", type=Path, help="Path to the audio file to transcribe.")
+    parser.add_argument(
+        "audio",
+        type=Path,
+        nargs="?",
+        help="Path to the audio file to transcribe. With --summarize, a .txt/.md transcript is also accepted.",
+    )
     parser.add_argument(
         "--model",
         default="turbo",
@@ -17,7 +22,7 @@ def main() -> None:
     parser.add_argument(
         "--language",
         default=None,
-        help="Spoken language code (e.g. 'en', 'ko'). Default: auto-detect. Ignored with --multi-lang.",
+        help="Spoken language code (e.g. 'en', 'ko'). Default: auto-detect ('ko' with --minutes). Ignored with --multi-lang.",
     )
     parser.add_argument(
         "--device",
@@ -42,99 +47,125 @@ def main() -> None:
         choices=["plain", "tagged", "timestamped"],
         help="Output format for --multi-lang. plain: concatenated text. tagged: '[lang] text'. timestamped: '[mm:ss.ss-mm:ss.ss lang] text'. Default: plain.",
     )
+
+    meeting = parser.add_argument_group("meeting minutes")
+    meeting.add_argument(
+        "--minutes",
+        action="store_true",
+        help="Meeting mode: write '<name>_회의록.md' with a timestamped transcript (Korean by default).",
+    )
+    meeting.add_argument(
+        "--summarize",
+        action="store_true",
+        help="Implies --minutes. Also organize the minutes (agenda, decisions, action items) with a local LLM.",
+    )
+    meeting.add_argument("--title", default=None, help="Meeting title. Default: '<name> 회의록'.")
+    meeting.add_argument("--attendees", default=None, help="Attendees, e.g. '김철수, 이영희'.")
+    meeting.add_argument(
+        "-o", "--output-dir", type=Path, default=None, help="Output directory. Default: current directory."
+    )
+
+    local_llm = parser.add_argument_group("local LLM (used with --summarize)")
+    local_llm.add_argument(
+        "--llm-backend",
+        default="ollama",
+        choices=["ollama", "openai"],
+        help="ollama: Ollama's native API. openai: any OpenAI-compatible local server (LM Studio, llama.cpp, vLLM). Default: ollama.",
+    )
+    local_llm.add_argument("--llm-model", default=None, help="Local model name. Default: exaone3.5:7.8b.")
+    local_llm.add_argument(
+        "--llm-url",
+        default=None,
+        help="Server URL. Default: http://localhost:11434 (ollama) / http://localhost:1234/v1 (openai).",
+    )
+    local_llm.add_argument(
+        "--num-ctx", type=int, default=8192, help="Context window passed to Ollama. Default: 8192."
+    )
+    local_llm.add_argument(
+        "--chunk-chars",
+        type=int,
+        default=6000,
+        help="Transcripts longer than this are summarized in parts first. Default: 6000.",
+    )
+    local_llm.add_argument(
+        "--allow-remote-llm",
+        action="store_true",
+        help="Allow a non-localhost --llm-url. Off by default so meeting content stays on this machine.",
+    )
+
+    parser.add_argument("--gui", action="store_true", help="Launch the desktop GUI.")
     args = parser.parse_args()
 
+    if args.gui:
+        from .gui import main as gui_main
+
+        gui_main()
+        return
+
+    if args.audio is None:
+        parser.error("the following arguments are required: audio (or use --gui)")
     if not args.audio.is_file():
-        sys.exit(f"error: audio file not found: {args.audio}")
+        sys.exit(f"error: file not found: {args.audio}")
 
-    import torch
-
-    if args.device:
-        device = args.device
-    elif torch.cuda.is_available():
-        device = "cuda"
-    elif torch.backends.mps.is_available():
-        device = "mps"
+    if args.minutes or args.summarize:
+        _run_minutes(args)
     else:
-        device = "cpu"
+        _run_transcribe(args)
 
-    if device == "mps":
-        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
-    import whisper
+def _run_minutes(args) -> None:
+    from . import llm, pipeline
 
-    print(f"loading model '{args.model}' on {device}...", file=sys.stderr)
-    model = whisper.load_model(args.model, device=device)
+    if args.audio.suffix.lower() in pipeline.TRANSCRIPT_SUFFIXES and not args.summarize:
+        sys.exit("error: a transcript file as input only makes sense with --summarize")
+
+    client = None
+    if args.summarize:
+        try:
+            client = llm.LocalLLM(
+                model=args.llm_model or llm.DEFAULT_MODEL,
+                backend=args.llm_backend,
+                url=args.llm_url,
+                num_ctx=args.num_ctx,
+                allow_remote=args.allow_remote_llm,
+            )
+        except llm.LLMError as e:
+            sys.exit(f"error: {e}")
+
+    opts = pipeline.MeetingOptions(
+        whisper_model=args.model,
+        device=args.device,
+        language=args.language or "ko",
+        title=args.title,
+        attendees=args.attendees,
+        out_dir=args.output_dir or Path.cwd(),
+        summarize=args.summarize,
+        llm_client=client,
+        chunk_chars=args.chunk_chars,
+    )
+    try:
+        pipeline.run_meeting(args.audio, opts)
+    except llm.LLMError as e:
+        sys.exit(f"error: summary failed: {e}\n(the transcript-only minutes were still saved)")
+
+
+def _run_transcribe(args) -> None:
+    from . import core
+
+    model = core.load_model(args.model, args.device)
 
     if args.multi_lang:
         if args.language:
             print("note: --language is ignored with --multi-lang", file=sys.stderr)
-        text = _transcribe_multi_lang(model, args.audio, args.format)
+        segments = core.transcribe_multi_lang(model, args.audio)
+        text = core.format_segments(segments, args.format)
     else:
         print(f"transcribing {args.audio.name}...", file=sys.stderr)
-        result = model.transcribe(
-            str(args.audio),
-            language=args.language,
-            verbose=True if args.per_seg else False,
-        )
-        text = result["text"].strip()
+        segments = core.transcribe(model, args.audio, language=args.language, per_seg=args.per_seg)
+        text = core.format_segments(segments, "plain")
 
-    output = Path.cwd() / f"{args.audio.stem}.txt"
+    out_dir = args.output_dir or Path.cwd()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    output = out_dir / f"{args.audio.stem}.txt"
     output.write_text(text + "\n", encoding="utf-8")
     print(f"wrote {output}", file=sys.stderr)
-
-
-def _fmt_time(s: float) -> str:
-    return f"{int(s // 60):02d}:{s % 60:05.2f}"
-
-
-def _transcribe_multi_lang(model, audio_path: Path, fmt: str) -> str:
-    import torch
-    import whisper
-    from silero_vad import get_speech_timestamps, load_silero_vad
-
-    audio = whisper.load_audio(str(audio_path))
-    audio_t = torch.from_numpy(audio)
-
-    print("running VAD to find speech segments...", file=sys.stderr)
-    vad_model = load_silero_vad()
-    segments = get_speech_timestamps(
-        audio_t,
-        vad_model,
-        sampling_rate=16000,
-        return_seconds=True,
-    )
-    if not segments:
-        print("warning: no speech detected", file=sys.stderr)
-        return ""
-
-    n_mels = model.dims.n_mels
-    parts = []
-    for i, seg in enumerate(segments, 1):
-        start_s = float(seg["start"])
-        end_s = float(seg["end"])
-        chunk = audio[int(start_s * 16000) : int(end_s * 16000)]
-
-        mel = whisper.log_mel_spectrogram(
-            whisper.pad_or_trim(chunk), n_mels=n_mels
-        ).to(model.device)
-        _, probs = model.detect_language(mel)
-        lang = max(probs, key=probs.get)
-
-        result = model.transcribe(chunk, language=lang, verbose=False)
-        text = result["text"].strip()
-
-        preview = text if len(text) <= 60 else text[:57] + "..."
-        print(
-            f"[{i}/{len(segments)}] {_fmt_time(start_s)}-{_fmt_time(end_s)} {lang}: {preview}",
-            file=sys.stderr,
-        )
-
-        if fmt == "timestamped":
-            parts.append(f"[{_fmt_time(start_s)}-{_fmt_time(end_s)} {lang}] {text}")
-        elif fmt == "tagged":
-            parts.append(f"[{lang}] {text}")
-        else:
-            parts.append(text)
-
-    return "\n".join(parts) if fmt != "plain" else " ".join(parts)

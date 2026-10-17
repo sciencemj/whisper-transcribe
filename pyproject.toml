@@ -1,19 +1,23 @@
 [project]
 name = "whisper-transcribe"
 version = "0.1.0"
-description = "Transcribe audio files (m4a, mp3, ...) to .txt using OpenAI Whisper."
+description = "Transcribe audio (m4a, mp3, ...) with OpenAI Whisper and turn Korean meetings into minutes with a local LLM."
 readme = "README.md"
 authors = [
     { name = "sciencemj", email = "sciencemj.park@gmail.com" }
 ]
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "flet[desktop]>=1.0.4,<2",
     "openai-whisper>=20240930",
     "silero-vad>=5.0",
 ]
 
 [project.scripts]
 whisper-transcribe = "whisper_transcribe:main"
+
+[project.gui-scripts]
+meeting-minutes = "whisper_transcribe.gui:main"
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]
