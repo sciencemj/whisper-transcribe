@@ -2,6 +2,8 @@
 
 A small CLI that transcribes audio files (m4a, mp3, wav, …) to `.txt` using [OpenAI Whisper](https://github.com/openai/whisper), with optional GPU acceleration (CUDA / Apple Silicon MPS).
 
+It also turns **Korean meeting recordings into meeting minutes (회의록)** — a timestamped transcript plus an AI-organized summary (agenda, discussion, decisions, action items) — with a desktop GUI. Everything runs **fully on your machine**: Whisper for speech-to-text and a local LLM server ([Ollama](https://ollama.com) or any OpenAI-compatible server such as LM Studio / llama.cpp) for the summary.
+
 ## Requirements
 
 - [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
@@ -14,7 +16,14 @@ git clone https://github.com/sciencemj/whisper-transcribe.git
 uv tool install --editable ./whisper-transcribe
 ```
 
-This puts `whisper-transcribe` on your `PATH` (via `~/.local/bin`).
+This puts `whisper-transcribe` and `meeting-minutes` (the GUI) on your `PATH` (via `~/.local/bin`).
+
+For AI-organized minutes, install [Ollama](https://ollama.com/download) and pull a Korean-capable model once:
+
+```bash
+ollama pull exaone3.5:7.8b    # default; LG AI Research, strong Korean (≈4.8 GB)
+ollama pull exaone3.5:2.4b    # lighter option for laptops (≈1.6 GB)
+```
 
 ## Usage
 
@@ -44,6 +53,68 @@ whisper-transcribe podcast.m4a -s                          # per-segment lines i
 whisper-transcribe bilingual.m4a --multi-lang              # auto language per chunk, plain text
 whisper-transcribe bilingual.m4a --multi-lang --format timestamped
 ```
+
+## Meeting minutes (회의록)
+
+```bash
+whisper-transcribe meeting.m4a --minutes                  # transcript-only minutes
+whisper-transcribe meeting.m4a --summarize                # + local LLM summary
+whisper-transcribe meeting.m4a --summarize --title "주간 회의" --attendees "김철수, 이영희" -o ~/Documents/minutes
+whisper-transcribe meeting_녹취록.txt --summarize --llm-model exaone3.5:2.4b   # re-summarize a saved transcript
+whisper-transcribe meeting_segments.json --summarize      # rebuild from a reviewed transcript
+```
+
+Writes `<name>_회의록.md` (header, AI summary, collapsible full transcript), `<name>_녹취록.txt` (timestamped transcript) and `<name>_segments.json` (Whisper's segments with audio timings, for review — see below). The transcript is saved *before* summarizing, so a failed or interrupted LLM step never loses it.
+
+Meeting mode defaults to Korean and tunes Whisper for long recordings: a Korean punctuation prompt, `condition_on_previous_text=False` to avoid repetition loops, and filtering of common Korean hallucinations on silence (e.g. "시청해주셔서 감사합니다"). Long transcripts are summarized in parts first, then merged.
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--minutes` | off | Meeting mode: write `<name>_회의록.md`. `--language` defaults to `ko`. |
+| `--summarize` | off | Implies `--minutes`; organize the minutes with a local LLM. Also accepts a `.txt`/`.md` transcript as input. |
+| `--title`, `--attendees` | – | Shown in the minutes header. |
+| `-o`, `--output-dir` | cwd | Output directory (also applies to plain transcription). |
+| `--llm-backend {ollama,openai}` | `ollama` | `openai` = any OpenAI-compatible local server (LM Studio, llama.cpp `llama-server`, vLLM). |
+| `--llm-model` | `exaone3.5:7.8b` | Local model name. |
+| `--llm-url` | `http://localhost:11434` / `http://localhost:1234/v1` | Server URL. |
+| `--num-ctx` | `8192` | Context window passed to Ollama. |
+| `--chunk-chars` | `6000` | Transcripts longer than this are summarized in parts. |
+| `--allow-remote-llm` | off | Permit a non-localhost LLM URL or an Ollama cloud model. |
+
+### GUI
+
+```bash
+meeting-minutes                 # or: whisper-transcribe --gui
+```
+
+A [Flet](https://flet.dev) desktop app: pick a recording (or transcript), set title/attendees, Whisper model/language/device and the local LLM, then generate. Shows progress and logs, renders the finished minutes, and can copy or open the file. On Linux the file picker needs `zenity`.
+
+### Reviewing the transcript against the audio (녹취록 검토 · 수정)
+
+After generating, press **녹취록 검토** (or open any `*_segments.json` in the **녹취록 검토 · 수정** tab):
+
+- The original recording plays with the segment being spoken highlighted; the list follows playback (toggle **재생 위치 따라가기**). Interpolated between player position reports, so the highlight moves smoothly.
+- Click a timestamp to play from there; edit any segment in place while listening. Playback keeps going while you type, and the list doesn't jump away from the segment you're editing.
+- Each segment keeps Whisper's original text: edited segments get a ↶ button to restore it, and a checkbox marks a segment as reviewed. The header shows `확인 n/N · 수정 m`.
+- Edits are saved to `<name>_segments.json` automatically ~2 s after you stop typing (and on leaving a field / Ctrl+S).
+- **회의록 다시 만들기** rebuilds `<name>_회의록.md` (and the AI summary, if enabled) from the corrected text.
+- Long meetings stay responsive: only ~80 segments are rendered at a time around the playback position.
+
+| Shortcut | Action |
+|---|---|
+| `Esc` / `Ctrl/⌘+K` | Play / pause |
+| `Ctrl/⌘+J` / `Ctrl/⌘+L` | Back / forward 5 s |
+| `Enter` (in a segment) | Mark reviewed and move to the next segment |
+| `Ctrl/⌘+Enter` | Mark the playing segment reviewed |
+| `Ctrl/⌘+S` | Save |
+
+Audio playback uses Flet's "full" desktop client (selected automatically). On Linux it needs `libmpv` and GStreamer (e.g. `sudo apt install libmpv2 gstreamer1.0-plugins-good gstreamer1.0-libav`); macOS and Windows need nothing extra.
+
+### Staying fully local
+
+- **This app** only talks to loopback LLM URLs and refuses Ollama *cloud* models (e.g. `gpt-oss:20b-cloud`, which forward prompts to ollama.com through the same local API) unless `--allow-remote-llm` is given. In the GUI, cloud models are hidden from the model list.
+- **Ollama**: inference is local, but Ollama also offers cloud models and web search. Start it with `OLLAMA_NO_CLOUD=1 ollama serve` to disable those server-side. The network is only needed for `ollama pull`.
+- **One-time downloads**: Whisper weights (`~/.cache/whisper/`), the LLM model (`ollama pull`) and the Flet desktop client (`~/.flet/client/`, on first GUI launch, from GitHub releases). After that everything works offline — the most reliable check is to simply disconnect from the network, or block outbound traffic for `ollama` with a firewall such as LuLu / Little Snitch.
 
 ## Notes
 
