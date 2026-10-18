@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "flet-audio>=1.0.4,<2",
     "flet[desktop]>=1.0.4,<2",
     "openai-whisper>=20240930",
     "silero-vad>=5.0",

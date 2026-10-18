@@ -12,7 +12,8 @@ def main() -> None:
         "audio",
         type=Path,
         nargs="?",
-        help="Path to the audio file to transcribe. With --summarize, a .txt/.md transcript is also accepted.",
+        help="Path to the audio file to transcribe. Also accepts a reviewed '<name>_segments.json' "
+        "(rebuilds the minutes), or with --summarize a .txt/.md transcript.",
     )
     parser.add_argument(
         "--model",
@@ -52,7 +53,8 @@ def main() -> None:
     meeting.add_argument(
         "--minutes",
         action="store_true",
-        help="Meeting mode: write '<name>_회의록.md' with a timestamped transcript (Korean by default).",
+        help="Meeting mode: write '<name>_회의록.md' with a timestamped transcript (Korean by default), "
+        "plus '<name>_segments.json' for reviewing it against the audio in the GUI.",
     )
     meeting.add_argument(
         "--summarize",
@@ -107,7 +109,9 @@ def main() -> None:
     if not args.audio.is_file():
         sys.exit(f"error: file not found: {args.audio}")
 
-    if args.minutes or args.summarize:
+    from .segments import is_segments_file
+
+    if args.minutes or args.summarize or is_segments_file(args.audio):
         _run_minutes(args)
     else:
         _run_transcribe(args)

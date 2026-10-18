@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import core, llm, minutes
+from . import core, llm, minutes, segments
 
 TRANSCRIPT_SUFFIXES = {".txt", ".md"}
 
@@ -27,6 +27,10 @@ class MeetingOptions:
     chunk_chars: int = 6000
 
 
+def needs_whisper(source: Path) -> bool:
+    return not segments.is_segments_file(source) and source.suffix.lower() not in TRANSCRIPT_SUFFIXES
+
+
 def run_meeting(
     source: Path,
     opts: MeetingOptions,
@@ -36,24 +40,33 @@ def run_meeting(
 ) -> Path:
     """Write `<stem>_회의록.md` into `opts.out_dir` and return its path.
 
-    `source` may be an audio file, or a previously saved transcript
+    `source` may be an audio file, a reviewed `<stem>_segments.json` to
+    rebuild the minutes from corrected text, or a plain transcript
     (.txt/.md) to only (re)run the LLM summary. Pass a loaded Whisper
     `model` to reuse it across calls.
     """
+    stem = segments.stem_of(source)
     info = minutes.MeetingInfo(
-        title=opts.title or f"{source.stem} 회의록",
+        title=opts.title or f"{stem} 회의록",
         source=source.name,
         attendees=opts.attendees,
     )
+    opts.out_dir.mkdir(parents=True, exist_ok=True)
 
-    if source.suffix.lower() in TRANSCRIPT_SUFFIXES:
+    if segments.is_segments_file(source):
+        log(f"reading reviewed transcript {source.name}...")
+        doc = segments.TranscriptDoc.load(source)
+        info.source = Path(doc.audio).name
+        info.duration = doc.duration
+        transcript = minutes.transcript_lines(doc.to_segments())
+    elif source.suffix.lower() in TRANSCRIPT_SUFFIXES:
         log(f"reading transcript {source.name}...")
         transcript = source.read_text(encoding="utf-8")
     else:
         if model is None:
             model = core.load_model(opts.whisper_model, opts.device, log=log)
         log(f"transcribing {source.name}...")
-        segments = core.transcribe(
+        segs = core.transcribe(
             model,
             source,
             language=opts.language or None,
@@ -63,16 +76,19 @@ def run_meeting(
             condition_on_previous_text=False,
             progress=progress,
         )
-        if not segments:
+        if not segs:
             log("warning: no speech recognized")
-        info.duration = segments[-1].end if segments else 0.0
-        transcript = minutes.transcript_lines(segments)
+        info.duration = segs[-1].end if segs else 0.0
+        transcript = minutes.transcript_lines(segs)
+        language = segs[0].lang if segs else (opts.language or None)
+        doc_path = segments.path_for(stem, opts.out_dir)
+        segments.TranscriptDoc.from_segments(source, segs, language).save(doc_path)
+        log(f"wrote {doc_path}")
 
-    opts.out_dir.mkdir(parents=True, exist_ok=True)
-    out = minutes.output_path(source, opts.out_dir)
+    out = minutes.output_path(stem, opts.out_dir)
     # Save the transcript first so a failed/aborted summary loses nothing.
     out.write_text(minutes.render(info, transcript), encoding="utf-8")
-    raw = out.with_name(f"{source.stem}_녹취록.txt")
+    raw = out.with_name(f"{stem}_녹취록.txt")
     if raw != source:
         raw.write_text(transcript + "\n", encoding="utf-8")
     log(f"wrote {out}")

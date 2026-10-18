@@ -148,6 +148,18 @@ desktop = [
 ]
 
 [[package]]
+name = "flet-audio"
+version = "1.0.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "flet" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/39/b7/80d08109fcabffd03bf87ce9a54135ba9a765a5dde8749b1ea8c4605b965/flet_audio-1.0.4.tar.gz", hash = "sha256:432cef58fe56b836a334dfdba3f53ae548d6d308af783878e26189e7def67fa3", size = 11719, upload-time = "2026-10-08T22:25:21.184Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e7/b6/cd3545f2c5e410cb9678c7b04a9e3b4fe480627c4a7eb49c12ee12b83fe3/flet_audio-1.0.4-py3-none-any.whl", hash = "sha256:f01b2616effb8ea56ca5fe9e6abce07ab53e1b9ae5a0004817fc72623178a0b3", size = 13495, upload-time = "2026-10-08T22:25:20.173Z" },
+]
+
+[[package]]
 name = "flet-desktop"
 version = "1.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -772,6 +784,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "flet", extra = ["desktop"] },
+    { name = "flet-audio" },
     { name = "openai-whisper" },
     { name = "silero-vad" },
 ]
@@ -779,6 +792,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "flet", extras = ["desktop"], specifier = ">=1.0.4,<2" },
+    { name = "flet-audio", specifier = ">=1.0.4,<2" },
     { name = "openai-whisper", specifier = ">=20240930" },
     { name = "silero-vad", specifier = ">=5.0" },
 ]

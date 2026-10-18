@@ -16,13 +16,15 @@ from pathlib import Path
 import flet as ft
 
 from . import llm
+from . import segments
 from .minutes import output_path
-from .pipeline import TRANSCRIPT_SUFFIXES, MeetingOptions, run_meeting
+from .pipeline import TRANSCRIPT_SUFFIXES, MeetingOptions, needs_whisper, run_meeting
+from .review import ReviewView
 
 WHISPER_MODELS = ["tiny", "base", "small", "medium", "large", "turbo"]
 LANGUAGES = {"ko": "한국어", "en": "영어", "ja": "일본어", "zh": "중국어", "": "자동 감지"}
 DEVICES = {"auto": "자동", "cuda": "CUDA", "mps": "Apple (MPS)", "cpu": "CPU"}
-SOURCE_EXTENSIONS = ["m4a", "mp3", "wav", "aac", "flac", "ogg", "webm", "mp4", "mov", "txt", "md"]
+SOURCE_EXTENSIONS = ["m4a", "mp3", "wav", "aac", "flac", "ogg", "webm", "mp4", "mov", "json", "txt", "md"]
 
 
 def _open_path(path: Path) -> None:
@@ -133,6 +135,9 @@ class MeetingApp:
         self.log_view = ft.ListView(spacing=2, auto_scroll=True, expand=True)
         self.open_btn = ft.OutlinedButton("파일 열기", icon=ft.Icons.DESCRIPTION, disabled=True, on_click=self._open_result)
         self.copy_btn = ft.OutlinedButton("복사", icon=ft.Icons.COPY, disabled=True, on_click=self._copy_result)
+        self.review_btn = ft.OutlinedButton(
+            "녹취록 검토", icon=ft.Icons.HEADPHONES, disabled=True, on_click=self._open_review
+        )
         self.folder_btn = ft.OutlinedButton(
             "폴더 열기", icon=ft.Icons.FOLDER_OPEN, on_click=lambda _: _open_path(Path(self.out_dir.value).expanduser())
         )
@@ -157,10 +162,29 @@ class MeetingApp:
             ),
         )
 
-        page.add(self._layout())
+        self.review = ReviewView(page, on_rebuild=self._rebuild_from)
+        self.view_tabs = ft.Tabs(
+            length=2,
+            expand=True,
+            content=ft.Column(
+                expand=True,
+                spacing=0,
+                controls=[
+                    ft.TabBar(
+                        tabs=[
+                            ft.Tab(label="회의록 생성", icon=ft.Icons.AUTO_AWESOME),
+                            ft.Tab(label="녹취록 검토 · 수정", icon=ft.Icons.HEADPHONES),
+                        ]
+                    ),
+                    ft.TabBarView(expand=True, controls=[self._generate_view(), self.review.control]),
+                ],
+            ),
+        )
+        page.on_keyboard_event = self._on_key
+        page.add(ft.Column(expand=True, spacing=0, controls=[self._header(), self.view_tabs]))
 
-    def _layout(self) -> ft.Control:
-        header = ft.Container(
+    def _header(self) -> ft.Control:
+        return ft.Container(
             padding=ft.Padding.symmetric(horizontal=24, vertical=14),
             bgcolor=ft.Colors.SURFACE_CONTAINER,
             content=ft.Row(
@@ -185,6 +209,8 @@ class MeetingApp:
                 ]
             ),
         )
+
+    def _generate_view(self) -> ft.Control:
         settings = ft.Container(
             width=420,
             padding=ft.Padding.only(left=16, top=16, bottom=16),
@@ -216,15 +242,14 @@ class MeetingApp:
                 controls=[
                     ft.Row([self.run_btn, ft.Column([self.progress, self.status], spacing=4, expand=True)], spacing=16),
                     ft.Card(expand=True, content=self.tabs),
-                    ft.Row([self.copy_btn, self.open_btn, self.folder_btn], alignment=ft.MainAxisAlignment.END),
+                    ft.Row(
+                        [self.review_btn, self.copy_btn, self.open_btn, self.folder_btn],
+                        alignment=ft.MainAxisAlignment.END,
+                    ),
                 ],
             ),
         )
-        return ft.Column(
-            expand=True,
-            spacing=0,
-            controls=[header, ft.Row([settings, output], expand=True, vertical_alignment=ft.CrossAxisAlignment.STRETCH)],
-        )
+        return ft.Row([settings, output], expand=True, vertical_alignment=ft.CrossAxisAlignment.STRETCH)
 
     # ---- helpers --------------------------------------------------------
     def _snack(self, message: str, error: bool = False) -> None:
@@ -310,7 +335,7 @@ class MeetingApp:
         if not source.is_file():
             self._snack("회의 녹음 파일을 선택하세요.", error=True)
             return
-        if source.suffix.lower() in TRANSCRIPT_SUFFIXES and not self.summarize.value:
+        if source.suffix.lower() in TRANSCRIPT_SUFFIXES and not segments.is_segments_file(source) and not self.summarize.value:
             self._snack("녹취록 파일은 '로컬 AI 정리'를 켠 경우에만 사용할 수 있습니다.", error=True)
             return
         try:
@@ -332,7 +357,7 @@ class MeetingApp:
 
         self.busy = True
         self.run_btn.disabled = True
-        self.open_btn.disabled = self.copy_btn.disabled = True
+        self.open_btn.disabled = self.copy_btn.disabled = self.review_btn.disabled = True
         self.progress.value = 0
         self.status.value = "준비 중…"
         self.log_view.controls.clear()
@@ -347,7 +372,7 @@ class MeetingApp:
 
         try:
             model = None
-            if source.suffix.lower() not in TRANSCRIPT_SUFFIXES:
+            if needs_whisper(source):
                 key = (opts.whisper_model, opts.device)
                 if key not in self.model_cache:
                     self.status.value = "Whisper 모델 불러오는 중…"
@@ -359,7 +384,7 @@ class MeetingApp:
             out = run_meeting(source, opts, log=self._log, progress=self._set_progress, model=model)
             self._finish(out, "완료")
         except llm.LLMError as e:
-            out = output_path(source, opts.out_dir)
+            out = output_path(segments.stem_of(source), opts.out_dir)
             if out.is_file():
                 self._finish(out, "녹취록만 저장됨")
             self._fail(f"AI 정리 실패 (녹취록은 저장됨): {e}")
@@ -375,6 +400,7 @@ class MeetingApp:
         self.status.value = f"{status} · {out.name}"
         self.run_btn.disabled = False
         self.open_btn.disabled = self.copy_btn.disabled = False
+        self.review_btn.disabled = not self._segments_path(out).is_file()
         self.tabs.selected_index = 0
         self.page.update()
 
@@ -388,6 +414,29 @@ class MeetingApp:
         self.page.update()
         self._snack(msg, error=True)
 
+    @staticmethod
+    def _segments_path(minutes_path: Path) -> Path:
+        stem = minutes_path.name.removesuffix("_회의록.md")
+        return segments.path_for(stem, minutes_path.parent)
+
+    async def _open_review(self, _e) -> None:
+        if self.result_path:
+            await self.review.load(self._segments_path(self.result_path))
+            self.view_tabs.selected_index = 1
+            self.page.update()
+
+    def _rebuild_from(self, doc_path: Path) -> None:
+        """Regenerate the minutes from a reviewed transcript using the current settings."""
+        self.source.value = str(doc_path)
+        self.out_dir.value = str(doc_path.parent)
+        self.view_tabs.selected_index = 0
+        self.page.update()
+        self._start(None)
+
+    async def _on_key(self, e: ft.KeyboardEvent) -> None:
+        if self.view_tabs.selected_index == 1:
+            await self.review.handle_key(e)
+
     def _open_result(self, _e) -> None:
         if self.result_path:
             _open_path(self.result_path)
@@ -399,4 +448,6 @@ class MeetingApp:
 
 
 def main() -> None:
+    # The "light" Linux client lacks the audio plugin used by the review tab.
+    os.environ.setdefault("FLET_DESKTOP_FLAVOR", "full")
     ft.run(MeetingApp)

@@ -75,5 +75,5 @@ def _transcript_md(transcript: str) -> str:
     return "\n\n".join(line for line in transcript.splitlines() if line.strip()) + "\n"
 
 
-def output_path(audio: Path, out_dir: Path) -> Path:
-    return out_dir / f"{audio.stem}_회의록.md"
+def output_path(stem: str, out_dir: Path) -> Path:
+    return out_dir / f"{stem}_회의록.md"
